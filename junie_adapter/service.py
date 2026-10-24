@@ -851,7 +851,7 @@ async def list_backups(request: Request):
             {
                 "file": f.name,
                 "size_bytes": stat.st_size,
-                "created_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "created_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
             }
         )
 
