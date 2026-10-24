@@ -15,4 +15,5 @@ if __name__ == "__main__":
     import uvicorn
 
     port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("junie_adapter.service:app", host="0.0.0.0", port=port, reload=False)
+    host = os.getenv("HOST", "127.0.0.1")
+    uvicorn.run("junie_adapter.service:app", host=host, port=port, reload=False)

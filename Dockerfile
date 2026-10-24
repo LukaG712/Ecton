@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11.11-slim
 
 WORKDIR /app
 
@@ -11,6 +11,10 @@ COPY . .
 
 # Create directories
 RUN mkdir -p logs
+
+# Run as non-root user for security
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
 
 # Expose port
 EXPOSE 8000

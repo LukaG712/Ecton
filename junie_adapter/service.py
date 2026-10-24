@@ -1,3 +1,4 @@
+import asyncio
 import hmac
 import json
 import logging
@@ -60,9 +61,8 @@ load_dotenv()
 
 # ─── App ─────────────────────────────────────────────────────────────────────
 
-# Lock for single-run Junie enforcement — use a simple flag instead of asyncio.Lock
-# to avoid issues with locked()/acquire() semantics in async context
-_junie_busy = False
+# Semaphore for single-run Junie enforcement — allows only one concurrent Junie task
+_junie_semaphore = asyncio.Semaphore(1)
 
 # Global config, set on startup
 config: OrchestratorConfig | None = None
@@ -348,70 +348,13 @@ async def readiness_check():
     return {
         "status": "ready",
         "service": "Slinker",
-        "version": "1.0.0",
-        "max_concurrent_workers": config.max_concurrent_workers,
-        "isolation_mode": config.isolation_mode.value,
     }
 
 
 @app.get("/api/capabilities")
 async def api_capabilities():
-    """Report the capabilities supported by this Slinker instance."""
-    return {
-        "service": "Slinker",
-        "version": "1.1.0",
-        "features": {
-            "task_execution": {
-                "supported": True,
-                "description": "Agent task execution via Junie CLI",
-            },
-            "chat_completions": {
-                "supported": True,
-                "description": "OpenAI-compatible chat completions API",
-            },
-            "streaming": {
-                "supported": True,
-                "description": "SSE streaming for chat completions",
-            },
-            "worktree_isolation": {
-                "supported": True,
-                "description": "Git worktree isolation for task execution",
-            },
-            "worker_pool": {
-                "supported": True,
-                "description": "Concurrent worker pool with semaphore",
-            },
-            "persistent_storage": {
-                "supported": True,
-                "description": "SQLite persistent task and session storage",
-            },
-            "project_management": {
-                "supported": True,
-                "description": "Project registration and management",
-            },
-            "queue_management": {
-                "supported": True,
-                "description": "Task queue with status tracking",
-            },
-            "session_logging": {
-                "supported": True,
-                "description": "Session log persistence and retrieval",
-            },
-            "prompt_refinement": {
-                "supported": True,
-                "description": "Prompt refinement via Ollama",
-            },
-            "backup": {
-                "supported": True,
-                "description": "SQLite database backup",
-            },
-            "opentelemetry": {
-                "supported": True,
-                "description": "OpenTelemetry tracing",
-            },
-        },
-        "api_versions": ["v1"],
-    }
+    """Return minimal service identification."""
+    return {"service": "Slinker"}
 
 
 # ─── Projects ────────────────────────────────────────────────────────────────
@@ -602,7 +545,7 @@ async def queue_status_api(request: Request):
         "max_concurrent_workers": config.max_concurrent_workers if config else 1,
         "active_workers": registry.active_count,
         "semaphore_active": _worker_semaphore.active_count,
-        "junie_busy": _junie_busy,
+        "junie_busy": _junie_semaphore.locked(),
     }
 
 
@@ -678,9 +621,8 @@ async def chat_completions(request: Request):
     junie_answer = ""
     task_status = TaskStatus.COMPLETED
 
-    # Check if Junie is already running
-    global _junie_busy
-    if _junie_busy:
+    # Acquire semaphore — non-blocking check to reject concurrent requests
+    if not _junie_semaphore.try_acquire():
         if stream:
             return StreamingResponse(
                 stream_busy_event(),
@@ -692,7 +634,6 @@ async def chat_completions(request: Request):
             detail="Junie is currently busy. Please try again in a moment.",
         )
 
-    _junie_busy = True
     try:
         result = await run_junie_task(improved_prompt, config)
         junie_answer = result.answer
@@ -703,7 +644,7 @@ async def chat_completions(request: Request):
         task_status = TaskStatus.FAILED
         runs_logger.error(f"Junie execution error: {e}")
     finally:
-        _junie_busy = False
+        _junie_semaphore.release()
 
     reply = format_reply(
         improved_prompt, junie_answer, fallback, error_reason, raw_prompt
